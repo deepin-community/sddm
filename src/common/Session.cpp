@@ -21,6 +21,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTextStream>
+#include <QSettings>
+#include <QLocale>
+#include <QRegularExpression>
+#include <QtGlobal>
+#include <QtCore/QtGlobal>
+#include <QtCore/QStringView>
 
 #include "Configuration.h"
 #include "Session.h"
@@ -28,6 +34,56 @@
 const QString s_entryExtention = QStringLiteral(".desktop");
 
 namespace SDDM {
+    // QSettings::IniFormat can't be used to read .desktop files due to different
+    // syntax of values (escape sequences, quoting, automatic QStringList detection).
+    // So implement yet another .desktop file parser.
+    class DesktopFileFormat {
+        static bool readFunc(QIODevice &device, QSettings::SettingsMap &map)
+        {
+            QString currentSectionName;
+            while(!device.atEnd())
+            {
+                // Iterate each line, remove line terminators
+                const auto line = device.readLine().replace("\r", "").replace("\n", "");
+                if(line.isEmpty() || line.startsWith('#'))
+                    continue; // Ignore empty lines and comments
+
+                if(line.startsWith('[')) // Section header
+                {
+                    // Remove [ and ].
+                    currentSectionName = QString::fromUtf8(line.mid(1, line.length() - 2));
+                }
+                else if(int equalsPos = line.indexOf('='); equalsPos > 0) // Key=Value
+                {
+                    const auto key = QString::fromUtf8(line.left(equalsPos));
+
+                    // Read the value, handle escape sequences
+                    auto valueBytes = line.mid(equalsPos + 1);
+                    valueBytes.replace("\\s", " ").replace("\\n", "\n");
+                    valueBytes.replace("\\t", "\t").replace("\\r", "\r");
+                    valueBytes.replace("\\\\", "\\");
+
+                    auto value = QString::fromUtf8(valueBytes);
+                    map.insert(currentSectionName + QLatin1Char('/') + key, value);
+                }
+            }
+
+            return true;
+        }
+    public:
+        // Register the .desktop file format if necessary, return its id.
+        static QSettings::Format format()
+        {
+            static QSettings::Format s_format = QSettings::InvalidFormat;
+            if (s_format == QSettings::InvalidFormat)
+                s_format = QSettings::registerFormat(QStringLiteral("desktop"),
+                                                     DesktopFileFormat::readFunc, nullptr,
+                                                     Qt::CaseSensitive);
+
+            return s_format;
+        }
+    };
+
     Session::Session()
         : m_valid(false)
         , m_type(UnknownSession)
@@ -50,6 +106,16 @@ namespace SDDM {
     Session::Type Session::type() const
     {
         return m_type;
+    }
+
+    int Session::vt() const
+    {
+        return m_vt;
+    }
+
+    void Session::setVt(int vt)
+    {
+        m_vt = vt;
     }
 
     QString Session::xdgSessionType() const
@@ -89,7 +155,7 @@ namespace SDDM {
 
     QString Session::desktopSession() const
     {
-        return fileName().replace(s_entryExtention, QString());
+        return QFileInfo(m_fileName).completeBaseName();
     }
 
     QString Session::desktopNames() const
@@ -107,6 +173,10 @@ namespace SDDM {
         return m_isNoDisplay;
     }
 
+    QProcessEnvironment Session::additionalEnv() const {
+        return m_additionalEnv;
+    }
+
     void Session::setTo(Type type, const QString &_fileName)
     {
         QString fileName(_fileName);
@@ -119,13 +189,15 @@ namespace SDDM {
         m_valid = false;
         m_desktopNames.clear();
 
+        QStringList sessionDirs;
+
         switch (type) {
         case WaylandSession:
-            m_dir = QDir(mainConfig.Wayland.SessionDir.get());
+            sessionDirs = mainConfig.Wayland.SessionDir.get();
             m_xdgSessionType = QStringLiteral("wayland");
             break;
         case X11Session:
-            m_dir = QDir(mainConfig.X11.SessionDir.get());
+            sessionDirs = mainConfig.X11.SessionDir.get();
             m_xdgSessionType = QStringLiteral("x11");
             break;
         default:
@@ -133,54 +205,56 @@ namespace SDDM {
             break;
         }
 
-        m_fileName = m_dir.absoluteFilePath(fileName);
+        QFile file;
+        for (const auto &path: qAsConst(sessionDirs)) {
+            m_dir.setPath(path);
+            m_fileName = m_dir.absoluteFilePath(fileName);
 
-        qDebug() << "Reading from" << m_fileName;
+            qDebug() << "Reading from" << m_fileName;
 
-        QFile file(m_fileName);
-        if (!file.open(QIODevice::ReadOnly))
+            file.setFileName(m_fileName);
+            if (file.open(QIODevice::ReadOnly))
+                break;
+        }
+        if (!file.isOpen())
             return;
 
-        QString current_section;
-
-        QTextStream in(&file);
-        while (!in.atEnd()) {
-            QString line = in.readLine();
-
-            if (line.startsWith(QLatin1String("["))) {
-                // The section name ends before the last ] before the start of a comment
-                int end = line.lastIndexOf(QLatin1Char(']'), line.indexOf(QLatin1Char('#')));
-                if (end != -1)
-                    current_section = line.mid(1, end - 1);
-            }
-
-            if (current_section != QLatin1String("Desktop Entry"))
-                continue; // We are only interested in the "Desktop Entry" section
-
-            if (line.startsWith(QLatin1String("Name="))) {
-                if (type == WaylandSession)
-                    if (line.mid(5).endsWith(QLatin1String(" (Wayland)")))
-                        m_displayName = QObject::tr("%1").arg(line.mid(5));
-                    else
-                        m_displayName = QObject::tr("%1 (Wayland)").arg(line.mid(5));
-                else
-                    m_displayName = line.mid(5);
-            }
-            if (line.startsWith(QLatin1String("Comment=")))
-                m_comment = line.mid(8);
-            if (line.startsWith(QLatin1String("Exec=")))
-                m_exec = line.mid(5);
-            if (line.startsWith(QStringLiteral("TryExec=")))
-                m_tryExec = line.mid(8);
-            if (line.startsWith(QLatin1String("DesktopNames=")))
-                m_desktopNames = line.mid(13).replace(QLatin1Char(';'), QLatin1Char(':'));
-            if (line.startsWith(QLatin1String("Hidden=")))
-                m_isHidden = line.mid(7).toLower() == QLatin1String("true");
-            if (line.startsWith(QLatin1String("NoDisplay=")))
-                m_isNoDisplay = line.mid(10).toLower() == QLatin1String("true");
+        QSettings settings(m_fileName, DesktopFileFormat::format());
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+        settings.setIniCodec("UTF-8");
+#endif
+        QStringList locales = { QLocale().name() };
+        if (auto clean = QLocale().name().remove(QRegularExpression(QLatin1String("_.*"))); clean != locales.constFirst()) {
+            locales << clean;
         }
 
-        file.close();
+        if (settings.status() != QSettings::NoError)
+                return;
+
+        settings.beginGroup(QLatin1String("Desktop Entry"));
+
+        auto localizedValue = [&] (const QLatin1String &key) {
+            for (QString locale : qAsConst(locales)) {
+                QString localizedValue = settings.value(key + QLatin1Char('[') + locale + QLatin1Char(']'), QString()).toString();
+                if (!localizedValue.isEmpty()) {
+                    return localizedValue;
+                }
+            }
+            return settings.value(key).toString();
+        };
+
+        m_displayName = localizedValue(QLatin1String("Name"));
+        m_comment = localizedValue(QLatin1String("Comment"));
+        m_exec = settings.value(QLatin1String("Exec"), QString()).toString();
+        m_tryExec = settings.value(QLatin1String("TryExec"), QString()).toString();
+        m_desktopNames = settings.value(QLatin1String("DesktopNames"), QString()).toString().replace(QLatin1Char(';'), QLatin1Char(':'));
+        QString hidden = settings.value(QLatin1String("Hidden"), QString()).toString();
+        m_isHidden = hidden.toLower() == QLatin1String("true");
+        QString noDisplay = settings.value(QLatin1String("NoDisplay"), QString()).toString();
+        m_isNoDisplay = noDisplay.toLower() == QLatin1String("true");
+        QString additionalEnv = settings.value(QLatin1String("X-SDDM-Env"), QString()).toString();
+        m_additionalEnv = parseEnv(additionalEnv);
+        settings.endGroup();
 
         m_type = type;
         m_valid = true;
@@ -191,4 +265,21 @@ namespace SDDM {
         setTo(other.type(), other.fileName());
         return *this;
     }
+
+    QProcessEnvironment SDDM::Session::parseEnv(const QString &list)
+    {
+        QProcessEnvironment env;
+        const auto entryList = QStringView{list}.split(u',', Qt::SkipEmptyParts);
+        for (const auto &entry: entryList) {
+            int midPoint = entry.indexOf(QLatin1Char('='));
+            if (midPoint < 0) {
+                qWarning() << "Malformed entry in" << fileName() << ":" << entry;
+                continue;
+            }
+            env.insert(entry.left(midPoint).toString(), entry.mid(midPoint+1).toString());
+        }
+        return env;
+    }
+
+
 }

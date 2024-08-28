@@ -23,29 +23,27 @@
 #define SDDM_AUTH_SESSION_H
 
 #include <QtCore/QObject>
-#include <QtCore/QString>
 #include <QtCore/QProcess>
+#include <QtCore/QTemporaryFile>
 
 namespace SDDM {
     class HelperApp;
+    class XOrgUserHelper;
+    class WaylandHelper;
     class UserSession : public QProcess
     {
         Q_OBJECT
     public:
         explicit UserSession(HelperApp *parent);
-        virtual ~UserSession();
 
         bool start();
+        void stop();
+
+        QString displayServerCommand() const;
+        void setDisplayServerCommand(const QString &command);
 
         void setPath(const QString &path);
         QString path() const;
-
-        /*!
-         \brief Sets m_cachedProcessId. Needed for getting the PID of a finished UserSession
-                and calling HelperApp::utmpLogout
-         \param pid  The process ID
-        */
-        void setCachedProcessId(qint64 pid);
 
         /*!
          \brief Gets m_cachedProcessId
@@ -53,12 +51,31 @@ namespace SDDM {
         */
         qint64 cachedProcessId();
 
+
+    Q_SIGNALS:
+        void finished(int exitCode);
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     protected:
-        void setupChildProcess();
+        void setupChildProcess() override;
+#endif
 
     private:
+        void setup();
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        // Don't call it directly, it will be invoked by the child process only
+        void childModifier();
+#endif
+
         QString m_path { };
-        qint64 m_cachedProcessId;
+        QTemporaryFile m_xauthFile;
+        QString m_displayServerCmd;
+
+        /*!
+         Needed for getting the PID of a finished UserSession and calling HelperApp::utmpLogout
+        */
+        qint64 m_cachedProcessId = -1;
     };
 }
 

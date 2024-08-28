@@ -136,14 +136,20 @@ namespace SDDM {
             if (avatarsEnabled) {
                 const QString userFace = QStringLiteral("%1/.face.icon").arg(user->homeDir);
                 const QString systemFace = QStringLiteral("%1/%2.face.icon").arg(facesDir).arg(user->name);
-                QString accountsServiceFace = QStringLiteral("/var/lib/AccountsService/icons/%1").arg(user->name);
+                const QString accountsServiceFace = QStringLiteral(ACCOUNTSSERVICE_DATA_DIR "/icons/%1").arg(user->name);
 
-                if (QFile::exists(userFace))
-                    user->icon = QStringLiteral("file://%1").arg(userFace);
+                QString userIcon;
+                // If the home is encrypted it takes a lot of time to open
+                // up the greeter, therefore we try the system avatar first
+                if (QFile::exists(systemFace))
+                    userIcon = systemFace;
+                else if (QFile::exists(userFace))
+                    userIcon = userFace;
                 else if (QFile::exists(accountsServiceFace))
-                    user->icon = accountsServiceFace;
-                else if (QFile::exists(systemFace))
-                    user->icon = QStringLiteral("file://%1").arg(systemFace);
+                    userIcon = accountsServiceFace;
+
+                if (!userIcon.isEmpty())
+                    user->icon = QStringLiteral("file://%1").arg(userIcon);
             }
         }
     }
@@ -164,7 +170,7 @@ namespace SDDM {
         return roleNames;
     }
 
-    const int UserModel::lastIndex() const {
+    int UserModel::lastIndex() const {
         return d->lastIndex;
     }
 
@@ -173,7 +179,7 @@ namespace SDDM {
     }
 
     int UserModel::rowCount(const QModelIndex &parent) const {
-        return d->users.length();
+        return parent.isValid() ? 0 : d->users.length();
     }
 
     QVariant UserModel::data(const QModelIndex &index, int role) const {

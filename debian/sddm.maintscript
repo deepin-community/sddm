@@ -1,1 +1,1 @@
-rm_conffile /etc/init/sddm.conf 0.18.1~
+rm_conffile /etc/dbus-1/system.d/sddm_org.freedesktop.DisplayManager.conf 0.21.0-1~

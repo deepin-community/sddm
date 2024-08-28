@@ -6,7 +6,7 @@
 sddm display manager configuration
 ----------------------------------
 
-:Date: August 2015
+:Date: March 2021
 :Version: sddm @SDDM_VERSION_STRING@
 :Manual section: 5
 :Manual group: sddm
@@ -35,6 +35,17 @@ OPTIONS
 =======
 
 [General] section:
+
+`DisplayServer=`
+	Select the display server to use for the greeter.
+	Valid values are:
+
+	* `x11`: X server running as root.
+	* `x11-user`: X server running as unprivileged user.
+	* `wayland`: Wayland compositor as unprivileged user. (Experimental)
+
+	Default value is "x11".
+	For `x11-user` you might need to configure Xorg.wrap(1).
 
 `HaltCommand=`
 	Halt command.
@@ -85,6 +96,9 @@ OPTIONS
 	Name of the cursor theme to be set before starting
 	the display server.
 
+`CursorSize=`
+	Cursor size to be set before starting the display server.
+
 `Font=`
 	Name of the font to be set before starting the
 	display server. Please note that the theme can still override this option.
@@ -110,13 +124,9 @@ OPTIONS
 	Path of the Xephyr.
 	Default value is "/usr/bin/Xephyr".
 
-`XauthPath=`
-	Path of the Xauth.
-	Default value is "/usr/bin/xauth".
-
 `SessionDir=`
-	Path of the directory containing session files.
-	Default value is "/usr/share/xsessions".
+	Comma-separated list of directories containing session files.
+	Default value is "/usr/local/share/xsessions,/usr/share/xsessions".
 
 `SessionCommand=`
 	Path of script to execute when starting the user session. This script
@@ -128,34 +138,43 @@ OPTIONS
         Path to the user session log file, relative to the home directory.
         Default value is ".local/share/sddm/xorg-session.log".
 
-`UserAuthFile=`
-        Path to the Xauthority file, relative to the home directory.
-        Default value is ".Xauthority".
-
 `DisplayCommand=`
 	Path of script to execute when starting the display server.
+	The script will be executed as root when General.DisplayServer
+	is "x11", otherwise as sddm user.
 	Default value is "@DATA_INSTALL_DIR@/scripts/Xsetup".
 
 `DisplayStopCommand=`
 	Path of script to execute when stopping the display server.
+	The script will be executed as root when General.DisplayServer
+	is "x11", otherwise as sddm user.
 	Default value is "@DATA_INSTALL_DIR@/scripts/Xstop".
 
 `MinimumVT=`
 	Minimum virtual terminal number that will be used
 	by the first display. Virtual terminal number will
 	increase as new displays added.
-	Default value is @MINIMUM_VT@.
+	This setting is no longer available since SDDM v0.20.
 
 `EnableHiDPI=`
 	Enables Qt's automatic HiDPI scaling.
 	Can be either "true" or "false".
-	Default value is "false".
+	Default value is "true".
+
+The `XauthPath=` option is no longer necessary, libxau is used instead.
+
+The `UserAuthFile=` option was removed, the file is always created as
+`/tmp/xauth_XXXXX`. This is necessary for to the use of `FamilyWild` entries.
 
 [Wayland] section:
 
+`CompositorCommand=`
+        Path of the compositor to execute when starting the greeter.
+        Default value is "weston --shell=kiosk".
+
 `SessionDir=`
-	Path of the directory containing session files.
-	Default value is "/usr/share/wayland-sessions".
+	Comma-separated list of directories containing session files.
+	Default value is "/usr/local/share/wayland-sessions,/usr/share/wayland-sessions".
 
 `SessionCommand=`
 	Path of script to execute when starting the user session. This script
@@ -170,7 +189,7 @@ OPTIONS
 `EnableHiDPI=`
 	Enables Qt's automatic HiDPI scaling.
 	Can be either "true" or "false".
-	Default value is "false".
+	Default value is "true".
 
 [Users] section:
 

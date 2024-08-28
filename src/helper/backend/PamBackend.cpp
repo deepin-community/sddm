@@ -23,9 +23,11 @@
 #include "HelperApp.h"
 #include "UserSession.h"
 #include "Auth.h"
+#include "VirtualTerminal.h"
 
 #include <QtCore/QString>
 #include <QtCore/QDebug>
+#include <QtCore/QRegularExpression>
 
 #include <stdlib.h>
 
@@ -58,14 +60,14 @@ namespace SDDM {
     AuthPrompt::Type PamData::detectPrompt(const struct pam_message* msg) const {
         if (msg->msg_style == PAM_PROMPT_ECHO_OFF) {
             QString message = QString::fromLocal8Bit(msg->msg);
-            if (message.indexOf(QRegExp(QStringLiteral("\\bpassword\\b"), Qt::CaseInsensitive)) >= 0) {
-                if (message.indexOf(QRegExp(QStringLiteral("\\b(re-?(enter|type)|again|confirm|repeat)\\b"), Qt::CaseInsensitive)) >= 0) {
+            if ((QRegularExpression(QStringLiteral("\\bpassword\\b"), QRegularExpression::CaseInsensitiveOption)).match(message).hasMatch()) {
+                if ((QRegularExpression(QStringLiteral("\\b(re-?(enter|type)|again|confirm|repeat)\\b"), QRegularExpression::CaseInsensitiveOption)).match(message).hasMatch()) {
                     return AuthPrompt::CHANGE_REPEAT;
                 }
-                else if (message.indexOf(QRegExp(QStringLiteral("\\bnew\\b"), Qt::CaseInsensitive)) >= 0) {
+                else if ((QRegularExpression(QStringLiteral("\\bnew\\b"), QRegularExpression::CaseInsensitiveOption)).match(message).hasMatch()) {
                     return AuthPrompt::CHANGE_NEW;
                 }
-                else if (message.indexOf(QRegExp(QStringLiteral("\\b(old|current)\\b"), Qt::CaseInsensitive)) >= 0) {
+                else if ((QRegularExpression(QStringLiteral("\\b(old|current)\\b"), QRegularExpression::CaseInsensitiveOption)).match(message).hasMatch()) {
                     return AuthPrompt::CHANGE_CURRENT;
                 }
                 else {
@@ -153,7 +155,7 @@ namespace SDDM {
     }
 
     Auth::Info PamData::handleInfo(const struct pam_message* msg, bool predict) {
-        if (QString::fromLocal8Bit(msg->msg).indexOf(QRegExp(QStringLiteral("^Changing password for [^ ]+$")))) {
+        if ((QRegularExpression(QStringLiteral("^Changing password for [^ ]+$"))).match(QString::fromLocal8Bit(msg->msg)).hasMatch()) {
             if (predict)
                 m_currentRequest = Request(changePassRequest);
             return Auth::INFO_PASS_CHANGE_REQUIRED;
@@ -248,17 +250,19 @@ namespace SDDM {
         }
 
         QProcessEnvironment sessionEnv = m_app->session()->processEnvironment();
-        if (sessionEnv.value(QStringLiteral("XDG_SESSION_TYPE")) == QLatin1String("x11")) {
+        const auto sessionType = sessionEnv.value(QStringLiteral("XDG_SESSION_TYPE"));
+        const auto sessionClass = sessionEnv.value(QStringLiteral("XDG_SESSION_CLASS"));
+        QString tty = VirtualTerminal::path(sessionEnv.value(QStringLiteral("XDG_VTNR")).toInt());
+        m_pam->setItem(PAM_TTY, qPrintable(tty));
+        if (sessionType == QLatin1String("x11") && (sessionClass == QLatin1String("user") || !m_displayServer)) {
             QString display = sessionEnv.value(QStringLiteral("DISPLAY"));
             if (!display.isEmpty()) {
 #ifdef PAM_XDISPLAY
                 m_pam->setItem(PAM_XDISPLAY, qPrintable(display));
-#endif
+#else
                 m_pam->setItem(PAM_TTY, qPrintable(display));
+#endif
             }
-        } else if (sessionEnv.value(QStringLiteral("XDG_SESSION_TYPE")) == QLatin1String("wayland")) {
-            QString tty = QStringLiteral("/dev/tty%1").arg(sessionEnv.value(QStringLiteral("XDG_VTNR")));
-            m_pam->setItem(PAM_TTY, qPrintable(tty));
         }
 
         if (!m_pam->putEnv(sessionEnv)) {

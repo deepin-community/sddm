@@ -20,11 +20,13 @@
 
 #include "HelperApp.h"
 #include "Backend.h"
+#include "Configuration.h"
 #include "UserSession.h"
 #include "SafeDataStream.h"
 
 #include "MessageHandler.h"
 #include "VirtualTerminal.h"
+#include "SignalHandler.h"
 
 #include <QtCore/QTimer>
 #include <QtCore/QFile>
@@ -41,6 +43,7 @@
 #endif
 #include <utmpx.h>
 #include <QByteArray>
+#include <signal.h>
 
 namespace SDDM {
     HelperApp::HelperApp(int& argc, char** argv)
@@ -49,12 +52,16 @@ namespace SDDM {
             , m_session(new UserSession(this))
             , m_socket(new QLocalSocket(this)) {
         qInstallMessageHandler(HelperMessageHandler);
+        SignalHandler *s = new SignalHandler(this);
+        QObject::connect(s, &SignalHandler::sigtermReceived, m_session, [] {
+            QCoreApplication::instance()->exit(-1);
+        });
 
         QTimer::singleShot(0, this, SLOT(setUp()));
     }
 
     void HelperApp::setUp() {
-        QStringList args = QCoreApplication::arguments();
+        const QStringList args = QCoreApplication::arguments();
         QString server;
         int pos;
 
@@ -94,6 +101,16 @@ namespace SDDM {
             m_user = args[pos + 1];
         }
 
+        if ((pos = args.indexOf(QStringLiteral("--display-server"))) >= 0) {
+            if (pos >= args.length() - 1) {
+                qCritical() << "This application is not supposed to be executed manually";
+                exit(Auth::HELPER_OTHER_ERROR);
+                return;
+            }
+            m_session->setDisplayServerCommand(args[pos + 1]);
+            m_backend->setDisplayServer(true);
+        }
+
         if ((pos = args.indexOf(QStringLiteral("--autologin"))) >= 0) {
             m_backend->setAutologin(true);
         }
@@ -109,7 +126,7 @@ namespace SDDM {
         }
 
         connect(m_socket, &QLocalSocket::connected, this, &HelperApp::doAuth);
-        connect(m_session, QOverload<int>::of(&QProcess::finished), this, &HelperApp::sessionFinished);
+        connect(m_session, &UserSession::finished, this, &HelperApp::sessionFinished);
         m_socket->connectToServer(server, QIODevice::ReadWrite | QIODevice::Unbuffered);
     }
 
@@ -124,22 +141,23 @@ namespace SDDM {
             authenticated(QString());
 
             // write failed login to btmp
-            QProcessEnvironment env = m_session->processEnvironment();
-            QString displayId = env.value(QStringLiteral("DISPLAY"));
-            QString vt = env.value(QStringLiteral("XDG_VTNR"));
+            const QProcessEnvironment env = m_session->processEnvironment();
+            const QString displayId = env.value(QStringLiteral("DISPLAY"));
+            const QString vt = env.value(QStringLiteral("XDG_VTNR"));
             utmpLogin(vt, displayId, m_user, 0, false);
 
             exit(Auth::HELPER_AUTH_ERROR);
             return;
         }
 
+        Q_ASSERT(getuid() == 0);
         if (!m_backend->authenticate()) {
             authenticated(QString());
 
             // write failed login to btmp
-            QProcessEnvironment env = m_session->processEnvironment();
-            QString displayId = env.value(QStringLiteral("DISPLAY"));
-            QString vt = env.value(QStringLiteral("XDG_VTNR"));
+            const QProcessEnvironment env = m_session->processEnvironment();
+            const QString displayId = env.value(QStringLiteral("DISPLAY"));
+            const QString vt = env.value(QStringLiteral("XDG_VTNR"));
             utmpLogin(vt, displayId, m_user, 0, false);
 
             exit(Auth::HELPER_AUTH_ERROR);
@@ -151,11 +169,6 @@ namespace SDDM {
 
         if (!m_session->path().isEmpty()) {
             env.insert(m_session->processEnvironment());
-            // Allocate a new VT for the wayland session
-            if(env.value(QStringLiteral("XDG_SESSION_TYPE")) == QLatin1String("wayland")) {
-                int vtNumber = VirtualTerminal::setUpNewVt();
-                env.insert(QStringLiteral("XDG_VTNR"), QString::number(vtNumber));
-            }
             m_session->setProcessEnvironment(env);
 
             if (!m_backend->openSession()) {
@@ -167,12 +180,11 @@ namespace SDDM {
             sessionOpened(true);
 
             // write successful login to utmp/wtmp
-            QProcessEnvironment env = m_session->processEnvironment();
-            QString displayId = env.value(QStringLiteral("DISPLAY"));
-            QString vt = env.value(QStringLiteral("XDG_VTNR"));
+            const QProcessEnvironment env = m_session->processEnvironment();
+            const QString displayId = env.value(QStringLiteral("DISPLAY"));
+            const QString vt = env.value(QStringLiteral("XDG_VTNR"));
             if (env.value(QStringLiteral("XDG_SESSION_CLASS")) != QLatin1String("greeter")) {
                 // cache pid for session end
-                m_session->setCachedProcessId(m_session->processId());
                 utmpLogin(vt, displayId, m_user, m_session->processId(), true);
             }
         }
@@ -182,17 +194,6 @@ namespace SDDM {
     }
 
     void HelperApp::sessionFinished(int status) {
-        m_backend->closeSession();
-
-        // write logout to utmp/wtmp
-        qint64 pid = m_session->cachedProcessId();
-        QProcessEnvironment env = m_session->processEnvironment();
-        if (env.value(QStringLiteral("XDG_SESSION_CLASS")) != QLatin1String("greeter")) {
-            QString vt = env.value(QStringLiteral("XDG_VTNR"));
-            QString displayId = env.value(QStringLiteral("DISPLAY"));
-            utmpLogout(vt, displayId, pid);
-        }
-
         exit(status);
     }
 
@@ -237,7 +238,7 @@ namespace SDDM {
         str >> m >> env >> m_cookie;
         if (m != AUTHENTICATED) {
             env = QProcessEnvironment();
-            m_cookie = QString();
+            m_cookie = {};
             qCritical() << "Received a wrong opcode instead of AUTHENTICATED:" << m;
         }
         return env;
@@ -255,6 +256,19 @@ namespace SDDM {
         }
     }
 
+    void HelperApp::displayServerStarted(const QString &displayName)
+    {
+        Msg m = Msg::MSG_UNKNOWN;
+        SafeDataStream str(m_socket);
+        str << Msg::DISPLAY_SERVER_STARTED << displayName;
+        str.send();
+        str.receive();
+        str >> m;
+        if (m != DISPLAY_SERVER_STARTED) {
+            qCritical() << "Received a wrong opcode instead of DISPLAY_SERVER_STARTED:" << m;
+        }
+    }
+
     UserSession *HelperApp::session() {
         return m_session;
     }
@@ -263,19 +277,33 @@ namespace SDDM {
         return m_user;
     }
 
-    const QString& HelperApp::cookie() const {
+    const QByteArray& HelperApp::cookie() const {
         return m_cookie;
     }
 
     HelperApp::~HelperApp() {
+        Q_ASSERT(getuid() == 0);
 
+        m_session->stop();
+        m_backend->closeSession();
+
+        // write logout to utmp/wtmp
+        qint64 pid = m_session->cachedProcessId();
+        if (pid < 0) {
+            return;
+        }
+        QProcessEnvironment env = m_session->processEnvironment();
+        if (env.value(QStringLiteral("XDG_SESSION_CLASS")) != QLatin1String("greeter")) {
+            QString vt = env.value(QStringLiteral("XDG_VTNR"));
+            QString displayId = env.value(QStringLiteral("DISPLAY"));
+            utmpLogout(vt, displayId, pid);
+        }
     }
 
     void HelperApp::utmpLogin(const QString &vt, const QString &displayName, const QString &user, qint64 pid, bool authSuccessful) {
-        struct utmpx entry;
+        struct utmpx entry { };
         struct timeval tv;
 
-        entry = { 0 };
         entry.ut_type = USER_PROCESS;
         entry.ut_pid = pid;
 
@@ -308,28 +336,15 @@ namespace SDDM {
             qWarning() << "Failed to write utmpx: " << strerror(errno);
         endutxent();
 
-#if !defined(Q_OS_FREEBSD)
-        // append to failed login database btmp
-        if (!authSuccessful) {
 #if defined(Q_OS_LINUX)
-            updwtmpx("/var/log/btmp", &entry);
-#endif
-        }
-
-        // append to wtmp
-        else {
-#if defined(Q_OS_LINUX)
-            updwtmpx("/var/log/wtmp", &entry);
-#endif
-        }
+        updwtmpx(authSuccessful ? "/var/log/wtmp" : "/var/log/btmp", &entry);
 #endif
     }
 
     void HelperApp::utmpLogout(const QString &vt, const QString &displayName, qint64 pid) {
-        struct utmpx entry;
+        struct utmpx entry { };
         struct timeval tv;
 
-        entry = { 0 };
         entry.ut_type = DEAD_PROCESS;
         entry.ut_pid = pid;
 

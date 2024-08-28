@@ -54,7 +54,7 @@ namespace SDDM {
         Q_PROPERTY(bool autologin READ autologin WRITE setAutologin NOTIFY autologinChanged)
         Q_PROPERTY(bool greeter READ isGreeter WRITE setGreeter NOTIFY greeterChanged)
         Q_PROPERTY(bool verbose READ verbose WRITE setVerbose NOTIFY verboseChanged)
-        Q_PROPERTY(QString cookie READ cookie WRITE setCookie NOTIFY cookieChanged)
+        Q_PROPERTY(QByteArray cookie READ cookie WRITE setCookie NOTIFY cookieChanged)
         Q_PROPERTY(QString user READ user WRITE setUser NOTIFY userChanged)
         Q_PROPERTY(QString session READ session WRITE setSession NOTIFY sessionChanged)
         Q_PROPERTY(AuthRequest* request READ request NOTIFY requestChanged)
@@ -69,6 +69,7 @@ namespace SDDM {
             INFO_PASS_CHANGE_REQUIRED,
             _INFO_LAST
         };
+        Q_ENUM(Info)
 
         enum Error {
             ERROR_NONE = 0,
@@ -77,20 +78,24 @@ namespace SDDM {
             ERROR_INTERNAL,
             _ERROR_LAST
         };
+        Q_ENUM(Error)
 
         enum HelperExitStatus {
             HELPER_SUCCESS = 0,
             HELPER_AUTH_ERROR,
             HELPER_SESSION_ERROR,
-            HELPER_OTHER_ERROR
+            HELPER_OTHER_ERROR,
+            HELPER_DISPLAYSERVER_ERROR,
+            HELPER_TTY_ERROR,
         };
+        Q_ENUM(HelperExitStatus)
 
         static void registerTypes();
 
         bool autologin() const;
         bool isGreeter() const;
         bool verbose() const;
-        const QString &cookie() const;
+        const QByteArray &cookie() const;
         const QString &user() const;
         const QString &session() const;
         AuthRequest *request();
@@ -140,6 +145,12 @@ namespace SDDM {
         void setUser(const QString &user);
 
         /**
+         * Set the display server command to be started before the greeter.
+         * @param command Command of the display server to be started
+         */
+        void setDisplayServerCommand(const QString &command);
+
+        /**
         * Set the session to be started after authenticating.
         * @param path Path of the session executable to be started
         */
@@ -149,7 +160,7 @@ namespace SDDM {
          * Set the display server cookie, to be inserted into the user's $XAUTHORITY
          * @param cookie cookie data
          */
-        void setCookie(const QString &cookie);
+        void setCookie(const QByteArray &cookie);
 
     public Q_SLOTS:
         /**
@@ -157,12 +168,18 @@ namespace SDDM {
         */
         void start();
 
+        /**
+         * Indicates that we do not need the process anymore.
+         */
+        void stop();
+
     Q_SIGNALS:
         void autologinChanged();
         void greeterChanged();
         void verboseChanged();
         void cookieChanged();
         void userChanged();
+        void displayServerCommandChanged();
         void sessionChanged();
         void requestChanged();
 
@@ -183,6 +200,13 @@ namespace SDDM {
         * @param success true if succeeded
         */
         void sessionStarted(bool success);
+
+        /**
+         * Emitted when the display server is ready.
+         *
+         * @param displayName display name
+         */
+        void displayServerReady(const QString &displayName);
 
         /**
         * Emitted when the helper quits, either after authentication or when the session ends.

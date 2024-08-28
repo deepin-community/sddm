@@ -28,79 +28,77 @@
 
 #include <QDebug>
 #include <QFile>
+#include <QTimer>
 
 #include <functional>
+#include <optional>
+#include <Login1Manager.h>
+#include <Login1Session.h>
 
 namespace SDDM {
-    int findUnused(int minimum, std::function<bool(const int)> used) {
-        // initialize with minimum
-        int number = minimum;
-
-        // find unused
-        while (used(number))
-            number++;
-
-        // return number;
-        return number;
-    }
-
     Seat::Seat(const QString &name, QObject *parent) : QObject(parent), m_name(name) {
-        createDisplay();
+        createDisplay(Display::defaultDisplayServerType());
     }
 
     const QString &Seat::name() const {
         return m_name;
     }
 
-    bool Seat::createDisplay(int terminalId) {
+    void Seat::createDisplay(Display::DisplayServerType serverType) {
         //reload config if needed
         mainConfig.load();
 
-        if (m_name == QLatin1String("seat0")) {
-            if (terminalId == -1) {
-                // find unused terminal
-                terminalId = findUnused(mainConfig.X11.MinimumVT.get(), [&](const int number) {
-                    return m_terminalIds.contains(number);
-                });
-            }
-
-            // mark terminal as used
-            m_terminalIds << terminalId;
-
-            // log message
-            qDebug() << "Adding new display" << "on vt" << terminalId << "...";
-        }
-        else {
-            qDebug() << "Adding new VT-less display...";
-        }
-
         // create a new display
-        Display *display = new Display(terminalId, this);
+        qDebug() << "Adding new display...";
+        Display *display = new Display(this, serverType);
 
         // restart display on stop
         connect(display, &Display::stopped, this, &Seat::displayStopped);
+        connect(display, &Display::displayServerFailed, this, [this, display] {
+            removeDisplay(display);
+
+            // If we failed to create a display with wayland or rootful x11, try with
+            // x11-user. There's a chance it might work. It's a handy fallback
+            // since the alternative is a black screen
+            if (display->displayServerType() != Display::X11UserDisplayServerType) {
+                qWarning() << "Failed to launch the display server, falling back to DisplayServer=x11-user";
+                createDisplay(Display::X11UserDisplayServerType);
+            } else if (m_displays.isEmpty()) {
+                qWarning() << "Failed to launch a DisplayServer=x11-user session, aborting";
+                QCoreApplication::instance()->exit(12);
+            }
+        });
 
         // add display to the list
         m_displays << display;
 
         // start the display
-        if (!display->start()) {
-            qCritical() << "Could not start Display server on vt" << terminalId;
-            return false;
+        startDisplay(display);
+    }
+
+    void Seat::startDisplay(Display *display, int tryNr) {
+        if (display->start())
+            return;
+
+        // It's possible that the system isn't ready yet (driver not loaded,
+        // device not enumerated, ...). It's not possible to tell when that changes,
+        // so try a few times with a delay in between.
+        qWarning() << "Attempt" << tryNr << "starting the Display server on vt" << display->terminalId() << "failed";
+
+        if(tryNr >= 3) {
+            qCritical() << "Could not start Display server on vt" << display->terminalId();
+            return;
         }
 
-        return true;
+        QTimer::singleShot(2000, display, [=] { startDisplay(display, tryNr + 1); });
     }
 
     void Seat::removeDisplay(Display* display) {
-        qDebug() << "Removing display" << display->displayId() << "...";
+        qDebug() << "Removing display" << display << "...";
 
 
         // remove display from list
         m_displays.removeAll(display);
-
-        // mark display and terminal ids as unused
-        m_terminalIds.removeAll(display->terminalId());
 
         // stop the display
         display->blockSignals(true);
@@ -113,22 +111,34 @@ namespace SDDM {
 
     void Seat::displayStopped() {
         Display *display = qobject_cast<Display *>(sender());
+        OrgFreedesktopLogin1ManagerInterface manager(Logind::serviceName(), Logind::managerPath(), QDBusConnection::systemBus());
+        std::optional<int> nextVt;
+        auto reusing = display->reuseSessionId();
+        if (manager.isValid() && !reusing.isEmpty()) {
+            auto sessionPath = manager.GetSession(reusing);
+            OrgFreedesktopLogin1SessionInterface sessionIface(Logind::serviceName(), sessionPath.value().path(), QDBusConnection::systemBus());
+            nextVt = QStringView(sessionIface.tTY()).mid(3).toInt(); // we need to convert ttyN to N
+        }
 
         // remove display
         removeDisplay(display);
 
         // restart otherwise
         if (m_displays.isEmpty()) {
-            createDisplay();
+            createDisplay(Display::defaultDisplayServerType());
         }
         // If there is still a session running on some display,
         // switch to last display in display vector.
         // Set vt_auto to true, so let the kernel handle the
         // vt switch automatically (VT_AUTO).
-        else {
+        else if (!nextVt) {
             int disp = m_displays.last()->terminalId();
             if (disp != -1)
-                VirtualTerminal::jumpToVt(disp, true);
+                nextVt = disp;
+        }
+
+        if (nextVt) {
+            VirtualTerminal::jumpToVt(*nextVt, true);
         }
     }
 }

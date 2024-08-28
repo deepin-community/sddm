@@ -71,6 +71,7 @@ namespace SDDM {
         void error();
 
     signals:
+        void informationMessage(const QString &message);
         void hostNameChanged(const QString &hostName);
         void canPowerOffChanged(bool canPowerOff);
         void canRebootChanged(bool canReboot);
@@ -78,6 +79,7 @@ namespace SDDM {
         void canHibernateChanged(bool canHibernate);
         void canHybridSleepChanged(bool canHybridSleep);
 
+        void socketDisconnected();
         void loginFailed();
         void loginSucceeded();
 

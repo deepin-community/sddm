@@ -22,6 +22,7 @@
 
 #include "Configuration.h"
 
+#include <QFileInfo>
 #include <QVector>
 #include <QProcessEnvironment>
 #include <QFileSystemWatcher>
@@ -35,27 +36,36 @@ namespace SDDM {
         }
 
         int lastIndex { 0 };
+        QStringList displayNames;
         QVector<Session *> sessions;
     };
 
     SessionModel::SessionModel(QObject *parent) : QAbstractListModel(parent), d(new SessionModelPrivate()) {
+        // Check for flag to show Wayland sessions
+        bool dri_active = QFileInfo::exists(QStringLiteral("/dev/dri"));
+
         // initial population
         beginResetModel();
-        populate(Session::WaylandSession, mainConfig.Wayland.SessionDir.get());
+        if (dri_active)
+            populate(Session::WaylandSession, mainConfig.Wayland.SessionDir.get());
         populate(Session::X11Session, mainConfig.X11.SessionDir.get());
         endResetModel();
 
         // refresh everytime a file is changed, added or removed
         QFileSystemWatcher *watcher = new QFileSystemWatcher(this);
-        connect(watcher, &QFileSystemWatcher::directoryChanged, [this](const QString &path) {
+        connect(watcher, &QFileSystemWatcher::directoryChanged, [this]() {
+            // Recheck for flag to show Wayland sessions
+            bool dri_active = QFileInfo::exists(QStringLiteral("/dev/dri"));
             beginResetModel();
             d->sessions.clear();
-            populate(Session::WaylandSession, mainConfig.Wayland.SessionDir.get());
+            d->displayNames.clear();
+            if (dri_active)
+                populate(Session::WaylandSession, mainConfig.Wayland.SessionDir.get());
             populate(Session::X11Session, mainConfig.X11.SessionDir.get());
             endResetModel();
         });
-        watcher->addPath(mainConfig.Wayland.SessionDir.get());
-        watcher->addPath(mainConfig.X11.SessionDir.get());
+        watcher->addPaths(mainConfig.Wayland.SessionDir.get());
+        watcher->addPaths(mainConfig.X11.SessionDir.get());
     }
 
     SessionModel::~SessionModel() {
@@ -75,12 +85,12 @@ namespace SDDM {
         return roleNames;
     }
 
-    const int SessionModel::lastIndex() const {
+    int SessionModel::lastIndex() const {
         return d->lastIndex;
     }
 
     int SessionModel::rowCount(const QModelIndex &parent) const {
-        return d->sessions.length();
+        return parent.isValid() ? 0 : d->sessions.length();
     }
 
     QVariant SessionModel::data(const QModelIndex &index, int role) const {
@@ -99,6 +109,8 @@ namespace SDDM {
         case TypeRole:
             return session->type();
         case NameRole:
+            if (d->displayNames.count(session->displayName()) > 1 && session->type() == Session::WaylandSession)
+                return tr("%1 (Wayland)").arg(session->displayName());
             return session->displayName();
         case ExecRole:
             return session->exec();
@@ -112,17 +124,18 @@ namespace SDDM {
         return QVariant();
     }
 
-    void SessionModel::populate(Session::Type type, const QString &path) {
+    void SessionModel::populate(Session::Type type, const QStringList &dirPaths) {
         // read session files
-        QDir dir(path);
-        dir.setNameFilters(QStringList() << QStringLiteral("*.desktop"));
-        dir.setFilter(QDir::Files);
+        QStringList sessions;
+        for (const auto &path: dirPaths) {
+            QDir dir = path;
+            dir.setNameFilters(QStringList() << QStringLiteral("*.desktop"));
+            dir.setFilter(QDir::Files);
+            sessions += dir.entryList();
+        }
         // read session
-        const auto sessions = dir.entryList();
-        for(const QString &session : sessions) {
-            if (!dir.exists(session))
-                continue;
-
+        sessions.removeDuplicates();
+        for (auto& session : qAsConst(sessions)) {
             Session *si = new Session(type, session);
             bool execAllowed = true;
             QFileInfo fi(si->tryExec());
@@ -144,10 +157,12 @@ namespace SDDM {
                 }
             }
             // add to sessions list
-            if (!si->isHidden() && !si->isNoDisplay() && execAllowed)
+            if (!si->isHidden() && !si->isNoDisplay() && execAllowed) {
+                d->displayNames.append(si->displayName());
                 d->sessions.push_back(si);
-            else
+            } else {
                 delete si;
+            }
         }
         // find out index of the last session
         for (int i = 0; i < d->sessions.size(); ++i) {

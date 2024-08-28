@@ -43,13 +43,14 @@ namespace SDDM {
             IconRole,
             NeedsPasswordRole
         };
+        Q_ENUM(UserRoles)
 
         UserModel(bool needAllUsers, QObject *parent = 0);
         ~UserModel();
 
         QHash<int, QByteArray> roleNames() const override;
 
-        const int lastIndex() const;
+        int lastIndex() const;
         QString lastUser() const;
 
         int rowCount(const QModelIndex &parent = QModelIndex()) const override;

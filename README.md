@@ -1,9 +1,9 @@
 ## INTRODUCTION
 
-[![Build Status](https://travis-ci.org/sddm/sddm.svg?branch=master)](https://travis-ci.org/sddm/sddm)
 [![IRC Network](https://img.shields.io/badge/irc-freenode-blue.svg "IRC Freenode")](https://webchat.freenode.net/?channels=sddm)
 
-SDDM is a modern display manager for X11 and Wayland aiming to be fast, simple and beautiful.
+SDDM is a modern display manager for X11 and Wayland sessions aiming to
+be fast, simple and beautiful.
 It uses modern technologies like QtQuick, which in turn gives the designer the ability to
 create smooth, animated user interfaces.
 
@@ -16,9 +16,6 @@ a combox etc.
 
 There are a few sample themes distributed with SDDM.
 They can be used as a starting point for new themes.
-
-SDDM is developed by volunteers, please consider [donating](https://www.bountysource.com/teams/sddm)
-money that can be used to support the features that you most desire.
 
 ## SCREENSHOTS
 
@@ -39,7 +36,7 @@ money that can be used to support the features that you most desire.
 
 ## INSTALLATION
 
-Qt >= 5.8.0 is required to use SDDM.
+Qt >= 5.15.0 is required to use SDDM.
 
 SDDM runs the greeter as a system user named "sddm" whose home directory needs
 to be set to `/var/lib/sddm`.
@@ -50,6 +47,17 @@ which will give it access to drm devices.
 Distributions without pam and systemd will need to put the "sddm" user
 into the "video" group, otherwise errors regarding GL and drm devices
 might be experienced.
+
+## VIRTUAL TERMINALS
+
+SDDM is assumed to start at the tty specified by the cmake variable
+SDDM_INITIAL_VT which is an integer and defaults to 1.
+
+If SDDM_INITIAL_VT wasn't available, SDDM will use the next available one
+instead.
+
+You can override SDDM_INITIAL_VT if you want to have a different one if,
+for example, you were planning on using tty1 for something else.
 
 ## LICENSE
 

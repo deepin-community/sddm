@@ -27,12 +27,19 @@
 #include "ThemeConfig.h"
 #include "ThemeMetadata.h"
 #include "Display.h"
+#include "XorgDisplayServer.h"
+#include "XorgUserDisplayServer.h"
+#include "WaylandDisplayServer.h"
 
 #include <QtCore/QDebug>
 #include <QtCore/QProcess>
+#include <VirtualTerminal.h>
 
 namespace SDDM {
-    Greeter::Greeter(QObject *parent) : QObject(parent) {
+    Greeter::Greeter(Display *parent)
+        : QObject(parent)
+        , m_display(parent)
+    {
         m_metadata = new ThemeMetadata(QString());
         m_themeConfig = new ThemeConfig(QString());
     }
@@ -42,14 +49,6 @@ namespace SDDM {
 
         delete m_metadata;
         delete m_themeConfig;
-    }
-
-    void Greeter::setDisplay(Display *display) {
-        m_display = display;
-    }
-
-    void Greeter::setAuthPath(const QString &authPath) {
-        m_authPath = authPath;
     }
 
     void Greeter::setSocket(const QString &socket) {
@@ -71,15 +70,43 @@ namespace SDDM {
         }
     }
 
+    QString Greeter::displayServerCommand() const
+    {
+        return m_displayServerCmd;
+    }
+
+    void Greeter::setDisplayServerCommand(const QString &cmd)
+    {
+        m_displayServerCmd = cmd;
+    }
+
+    QString Greeter::greeterPathForQt(int qtVersion)
+    {
+        const QString suffix = qtVersion == 5 ? QString() : QStringLiteral("-qt%1").arg(qtVersion);
+        return QStringLiteral(BIN_INSTALL_DIR "/sddm-greeter%1").arg(suffix);
+    }
+
     bool Greeter::start() {
         // check flag
         if (m_started)
             return false;
 
+        // If no theme is given, use the default theme of the default greeter version
+        const int themeQtVersion = m_themePath.isEmpty() ? (QT_VERSION >> 16) : m_metadata->qtVersion();
+        QString greeterPath = greeterPathForQt(themeQtVersion);
+        if (!QFileInfo(greeterPath).isExecutable()) {
+            qWarning() << "The theme at" << m_themePath << "requires missing" << greeterPath << ". Using fallback theme.";
+            setTheme(QString());
+            greeterPath = greeterPathForQt(QT_VERSION >> 16);
+        }
+
         // themes
         QString xcursorTheme = mainConfig.Theme.CursorTheme.get();
         if (m_themeConfig->contains(QLatin1String("cursorTheme")))
             xcursorTheme = m_themeConfig->value(QLatin1String("cursorTheme")).toString();
+        QString xcursorSize = mainConfig.Theme.CursorSize.get();
+        if (m_themeConfig->contains(QLatin1String("cursorSize")))
+            xcursorSize = m_themeConfig->value(QLatin1String("cursorSize")).toString();
         QString platformTheme;
         if (m_themeConfig->contains(QLatin1String("platformTheme")))
             platformTheme = m_themeConfig->value(QLatin1String("platformTheme")).toString();
@@ -98,6 +125,9 @@ namespace SDDM {
         if (!style.isEmpty())
             args << QLatin1String("-style") << style;
 
+        Q_ASSERT(m_display);
+        auto *displayServer = m_display->displayServer();
+
         if (daemonApp->testing()) {
             // create process
             m_process = new QProcess(this);
@@ -111,18 +141,20 @@ namespace SDDM {
             // log message
             qDebug() << "Greeter starting...";
 
-            // set process environment
-            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-            env.insert(QStringLiteral("DISPLAY"), m_display->name());
-            env.insert(QStringLiteral("XAUTHORITY"), m_authPath);
-            env.insert(QStringLiteral("XCURSOR_THEME"), xcursorTheme);
-            env.insert(QStringLiteral("QT_IM_MODULE"), mainConfig.InputMethod.get());
-            m_process->setProcessEnvironment(env);
+            args << QStringLiteral("--test-mode");
 
-            // start greeter
-            if (daemonApp->testing())
-                args << QStringLiteral("--test-mode");
-            m_process->start(QStringLiteral("%1/sddm-greeter").arg(QStringLiteral(BIN_INSTALL_DIR)), args);
+            if (m_display->displayServerType() == Display::X11DisplayServerType) {
+                // set process environment
+                QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+                env.insert(QStringLiteral("DISPLAY"), m_display->name());
+                env.insert(QStringLiteral("XAUTHORITY"), qobject_cast<XorgDisplayServer*>(displayServer)->authPath());
+                env.insert(QStringLiteral("XCURSOR_THEME"), xcursorTheme);
+                if (!xcursorSize.isEmpty())
+                    env.insert(QStringLiteral("XCURSOR_SIZE"), xcursorSize);
+                m_process->setProcessEnvironment(env);
+            }
+            // Greeter command
+            m_process->start(greeterPath, args);
 
             //if we fail to start bail immediately, and don't block in waitForStarted
             if (m_process->state() == QProcess::NotRunning) {
@@ -149,14 +181,14 @@ namespace SDDM {
             m_auth->setVerbose(true);
             connect(m_auth, &Auth::requestChanged, this, &Greeter::onRequestChanged);
             connect(m_auth, &Auth::sessionStarted, this, &Greeter::onSessionStarted);
+            connect(m_auth, &Auth::displayServerReady, this, &Greeter::onDisplayServerReady);
             connect(m_auth, &Auth::finished, this, &Greeter::onHelperFinished);
             connect(m_auth, &Auth::info, this, &Greeter::authInfo);
             connect(m_auth, &Auth::error, this, &Greeter::authError);
 
-            // greeter command
+            // command
             QStringList cmd;
-            cmd << QStringLiteral("%1/sddm-greeter").arg(QStringLiteral(BIN_INSTALL_DIR))
-                << args;
+            cmd << greeterPath << args;
 
             // greeter environment
             QProcessEnvironment env;
@@ -173,9 +205,9 @@ namespace SDDM {
             }, sysenv, env);
 
             env.insert(QStringLiteral("PATH"), mainConfig.Users.DefaultPath.get());
-            env.insert(QStringLiteral("DISPLAY"), m_display->name());
-            env.insert(QStringLiteral("XAUTHORITY"), m_authPath);
             env.insert(QStringLiteral("XCURSOR_THEME"), xcursorTheme);
+            if (!xcursorSize.isEmpty())
+                env.insert(QStringLiteral("XCURSOR_SIZE"), xcursorSize);
             env.insert(QStringLiteral("XDG_SEAT"), m_display->seat()->name());
             env.insert(QStringLiteral("XDG_SEAT_PATH"), daemonApp->displayManager()->seatPath(m_display->seat()->name()));
             env.insert(QStringLiteral("XDG_SESSION_PATH"), daemonApp->displayManager()->sessionPath(QStringLiteral("Session%1").arg(daemonApp->newSessionId())));
@@ -183,11 +215,14 @@ namespace SDDM {
                 env.insert(QStringLiteral("XDG_VTNR"), QString::number(m_display->terminalId()));
             env.insert(QStringLiteral("XDG_SESSION_CLASS"), QStringLiteral("greeter"));
             env.insert(QStringLiteral("XDG_SESSION_TYPE"), m_display->sessionType());
-            env.insert(QStringLiteral("QT_IM_MODULE"), mainConfig.InputMethod.get());
-
-            //some themes may use KDE components and that will automatically load KDE's crash handler which we don't want
-            //counterintuitively setting this env disables that handler
-            env.insert(QStringLiteral("KDE_DEBUG"), QStringLiteral("1"));
+            if (m_display->displayServerType() == Display::X11DisplayServerType) {
+                env.insert(QStringLiteral("DISPLAY"), m_display->name());
+                env.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("xcb"));
+                m_auth->setCookie(qobject_cast<XorgDisplayServer*>(displayServer)->cookie());
+            } else if (m_display->displayServerType() == Display::WaylandDisplayServerType) {
+                env.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("wayland"));
+                env.insert(QStringLiteral("QT_WAYLAND_SHELL_INTEGRATION"), QStringLiteral("xdg-shell"));
+            }
             m_auth->insertEnvironment(env);
 
             // log message
@@ -195,6 +230,7 @@ namespace SDDM {
 
             // start greeter
             m_auth->setUser(QStringLiteral("sddm"));
+            m_auth->setDisplayServerCommand(m_displayServerCmd);
             m_auth->setGreeter(true);
             m_auth->setSession(cmd.join(QLatin1Char(' ')));
             m_auth->start();
@@ -225,6 +261,8 @@ namespace SDDM {
             // wait for finished
             if (!m_process->waitForFinished(5000))
                 m_process->kill();
+        } else {
+            m_auth->stop();
         }
     }
 
@@ -240,8 +278,10 @@ namespace SDDM {
         qDebug() << "Greeter stopped.";
 
         // clean up
-        m_process->deleteLater();
-        m_process = nullptr;
+        if (m_process) {
+            m_process->deleteLater();
+            m_process = nullptr;
+        }
     }
 
     void Greeter::onRequestChanged() {
@@ -259,29 +299,55 @@ namespace SDDM {
             qDebug() << "Greeter session failed to start";
     }
 
+    void Greeter::onDisplayServerReady(const QString &displayName)
+    {
+        auto *displayServer = m_display->displayServer();
+
+        auto *xorgUser = qobject_cast<XorgUserDisplayServer *>(displayServer);
+        if (xorgUser)
+            xorgUser->setDisplayName(displayName);
+
+        auto *wayland = qobject_cast<WaylandDisplayServer *>(displayServer);
+        if (wayland)
+            wayland->setDisplayName(displayName);
+    }
+
     void Greeter::onHelperFinished(Auth::HelperExitStatus status) {
         // reset flag
         m_started = false;
 
         // log message
-        qDebug() << "Greeter stopped.";
+        qDebug() << "Greeter stopped." << status;
 
         // clean up
         m_auth->deleteLater();
         m_auth = nullptr;
+
+        if (status == Auth::HELPER_DISPLAYSERVER_ERROR) {
+            Q_EMIT displayServerFailed();
+        } else if (status == Auth::HELPER_TTY_ERROR) {
+            Q_EMIT ttyFailed();
+        } else if (status == Auth::HELPER_SESSION_ERROR) {
+            Q_EMIT failed();
+        }
+    }
+
+    bool Greeter::isRunning() const {
+        return (m_process && m_process->state() == QProcess::Running)
+            || (m_auth && m_auth->isActive());
     }
 
     void Greeter::onReadyReadStandardError()
     {
         if (m_process) {
-            qDebug() << "Greeter errors:" << qPrintable(QString::fromLocal8Bit(m_process->readAllStandardError()));
+            qDebug() << "Greeter errors:" << m_process->readAllStandardError().constData();
         }
     }
 
     void Greeter::onReadyReadStandardOutput()
     {
         if (m_process) {
-            qDebug() << "Greeter output:" << qPrintable(QString::fromLocal8Bit(m_process->readAllStandardOutput()));
+            qDebug() << "Greeter output:" << m_process->readAllStandardOutput().constData();
         }
     }
 
