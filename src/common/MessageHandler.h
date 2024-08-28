@@ -24,13 +24,15 @@
 #include "Constants.h"
 
 #include <QDateTime>
+#include <QStandardPaths>
 #include <QFile>
+#include <QDir>
 
 #include <stdio.h>
+#include <unistd.h>
 
 #ifdef HAVE_JOURNALD
 #include <systemd/sd-journal.h>
-#include <unistd.h>
 #endif
 
 namespace SDDM {
@@ -41,6 +43,9 @@ namespace SDDM {
             case QtDebugMsg:
                 priority = LOG_DEBUG;
             break;
+            case QtInfoMsg:
+                priority = LOG_INFO;
+            break;
             case QtWarningMsg:
                 priority = LOG_WARNING;
             break;
@@ -49,8 +54,6 @@ namespace SDDM {
             break;
             case QtFatalMsg:
                 priority = LOG_ALERT;
-            break;
-            default:
             break;
         }
 
@@ -69,17 +72,27 @@ namespace SDDM {
     static void standardLogger(QtMsgType type, const QString &msg) {
         static QFile file(QStringLiteral(LOG_FILE));
 
-        // try to open file only if it's not already open
-        if (!file.isOpen()) {
+        // Try to open the log file if we're not outputting to a terminal
+        if (!file.isOpen() && !isatty(STDERR_FILENO)) {
             if (!file.open(QFile::Append | QFile::WriteOnly))
                 file.open(QFile::Truncate | QFile::WriteOnly);
+
+            // If we can't open the file, create it in a writable location
+            // It will look spmething like ~/.local/share/$appname/sddm.log
+            // or for the sddm user /var/lib/sddm/.local/share/$appname/sddm.log
+            if (!file.isOpen()) {
+                QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+                file.setFileName(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QLatin1String("/sddm.log"));
+                if (!file.open(QFile::Append | QFile::WriteOnly))
+                    file.open(QFile::Truncate | QFile::WriteOnly);
+            }
         }
 
         // create timestamp
         QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss.zzz"));
 
         // set log priority
-	QString logPriority = QStringLiteral("(II)");
+        QString logPriority = QStringLiteral("(II)");
         switch (type) {
             case QtDebugMsg:
             break;
@@ -102,36 +115,27 @@ namespace SDDM {
             file.write(logMessage.toLocal8Bit());
             file.flush();
         } else {
-            printf("%s", qPrintable(logMessage));
-            fflush(stdout);
+            fputs(qPrintable(logMessage), stderr);
+            fflush(stderr);
         }
     }
 
     static void messageHandler(QtMsgType type, const QMessageLogContext &context, const QString &prefix, const QString &msg) {
-        // copy message to edit it
-        QString logMessage = msg;
-
 #ifdef HAVE_JOURNALD
         // don't log to journald if running interactively, this is likely
         // the case when running sddm in test mode
-        static bool isInteractive = isatty(STDIN_FILENO);
+        static bool isInteractive = isatty(STDERR_FILENO) && qgetenv("USER") != "sddm";
         if (!isInteractive) {
             // log to journald
-            journaldLogger(type, context, logMessage);
-        } else {
-            // prepend program name
-            logMessage = prefix + msg;
-
-            // log to file or stdout
-            standardLogger(type, logMessage);
+            journaldLogger(type, context, msg);
+            return;
         }
-#else
-        // prepend program name
-        logMessage = prefix + msg;
-
-        // log to file or stdout
-        standardLogger(type, logMessage);
 #endif
+        // prepend program name
+        QString logMessage = prefix + msg;
+
+        // log to file or stderr
+        standardLogger(type, logMessage);
     }
 
     void DaemonMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {

@@ -2,27 +2,25 @@ Source: sddm
 Section: kde
 Priority: optional
 Maintainer: Debian Qt/KDE Maintainers <debian-qt-kde@lists.debian.org>
-Uploaders: Michał Zając <quintasan@kubuntu.org>,
-           Maximiliano Curia <maxy@debian.org>,
-           Aurélien COUDERC <coucouf@debian.org>,
-           Norbert Preining <norbert@preining.info>,
-Build-Depends: cmake (>= 2.8.8),
+Uploaders: Aurélien COUDERC <coucouf@debian.org>,
+Build-Depends: cmake (>= 3.4~),
                debhelper-compat (= 13),
                extra-cmake-modules (>= 1.4.0~),
                libpam0g-dev,
                libsystemd-dev [linux-any],
-               libupower-glib-dev,
+               libxau-dev,
                libxcb-xkb-dev,
                libxcb1-dev,
                libxkbcommon-dev,
-               pkg-config,
+               pkgconf,
                python3-docutils,
-               qtbase5-dev (>= 5.8.0~),
-               qtdeclarative5-dev (>= 5.8.0~),
+               qml-module-qttest <!nocheck>,
+               qtbase5-dev (>= 5.15.0~),
+               qtdeclarative5-dev (>= 5.15.0~),
                qttools5-dev,
-               qttools5-dev-tools (>= 5.8.0~),
-               systemd [linux-any],
-Standards-Version: 4.5.0
+               qttools5-dev-tools (>= 5.15.0~),
+               systemd-dev [linux-any],
+Standards-Version: 4.6.2
 Homepage: https://github.com/sddm/sddm
 Vcs-Browser: https://salsa.debian.org/qt-kde-team/3rdparty/sddm
 Vcs-Git: https://salsa.debian.org/qt-kde-team/3rdparty/sddm.git
@@ -32,12 +30,13 @@ Package: sddm
 Architecture: any
 Depends: adduser,
          qml-module-qtquick2,
-         xauth,
          x11-common,
+         xauth,
+         xkb-data,
          xserver-xorg | xserver,
          ${misc:Depends},
          ${shlibs:Depends},
-Recommends: haveged, libpam-systemd, sddm-theme-debian-maui | sddm-theme
+Recommends: libpam-systemd, sddm-theme-debian-breeze | sddm-theme
 Suggests: libpam-kwallet5, qtvirtualkeyboard-plugin
 Provides: x-display-manager
 Description: modern display manager for X11

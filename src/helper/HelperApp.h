@@ -40,13 +40,14 @@ namespace SDDM {
 
         UserSession *session();
         const QString &user() const;
-        const QString &cookie() const;
+        const QByteArray &cookie() const;
 
     public slots:
         Request request(const Request &request);
         void info(const QString &message, Auth::Info type);
         void error(const QString &message, Auth::Error type);
         QProcessEnvironment authenticated(const QString &user);
+        void displayServerStarted(const QString &displayName);
         void sessionOpened(bool success);
 
     private slots:
@@ -62,7 +63,7 @@ namespace SDDM {
         QLocalSocket *m_socket { nullptr };
         QString m_user { };
         // TODO: get rid of this in a nice clean way along the way with moving to user session X server
-        QString m_cookie { };
+        QByteArray m_cookie { };
 
         /*!
          \brief Write utmp/wtmp/btmp records when a user logs in

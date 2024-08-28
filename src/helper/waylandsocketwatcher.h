@@ -1,5 +1,5 @@
 /***************************************************************************
-* Copyright (c) 2015 Pier Luigi Fiorini <pierluigi.fiorini@gmail.com>
+* Copyright (c) 2021 Pier Luigi Fiorini <pierluigi.fiorini@gmail.com>
 *
 * This program is free software; you can redistribute it and/or modify
 * it under the terms of the GNU General Public License as published by
@@ -17,21 +17,48 @@
 * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 ***************************************************************************/
 
-#include <QDebug>
-#include <QString>
+#ifndef WAYLANDSOCKETWATCHER_H
+#define WAYLANDSOCKETWATCHER_H
 
-#include "VirtualTerminal.h"
-
+#include <QDir>
+#include <QFileSystemWatcher>
+#include <QPointer>
+#include <QTimer>
 
 namespace SDDM {
-    namespace VirtualTerminal {
-        int setUpNewVt() {
-            qDebug() << "New VT is unsupported on FreeBSD";
-            return -1;
-        }
 
-        void jumpToVt(int vt, bool vt_auto) {
-            qDebug() << "Jumping to VT" << vt << "is unsupported on FreeBSD";
-        }
-    }
-}
+class WaylandSocketWatcher : public QObject
+{
+    Q_OBJECT
+public:
+    enum Status {
+        Started,
+        Stopped,
+        Failed
+    };
+    Q_ENUM(Status)
+
+    explicit WaylandSocketWatcher(QObject *parent = nullptr);
+
+    Status status() const;
+    QString socketName() const;
+
+    void start();
+    void stop();
+
+Q_SIGNALS:
+    void started();
+    void stopped();
+    void failed();
+
+private:
+    Status m_status = Stopped;
+    QDir m_runtimeDir;
+    QString m_socketName;
+    QTimer m_timer;
+    QPointer<QFileSystemWatcher> m_watcher;
+};
+
+} // namespace SDDM
+
+#endif // WAYLANDSOCKETWATCHER_H

@@ -1,4 +1,5 @@
 /***************************************************************************
+* Copyright (c) 2023 Fabian Vogt <fabian@ritter-vogt.de>
 * Copyright (c) 2016 Pier Luigi Fiorini <pierluigi.fiorini@gmail.com>
 * Copyright (c) 2014 David Edmundson <davidedmundson@kde.org>
 * Copyright (c) 2013 Abdurrahman AVCI <abdurrahmanavci@gmail.com>
@@ -26,12 +27,20 @@
 #include <QStringList>
 
 namespace SDDM {
-    ThemeConfig::ThemeConfig(const QString &path) {
+    ThemeConfig::ThemeConfig(const QString &path, QObject *parent)
+        : QQmlPropertyMap(this, parent) {
         setTo(path);
     }
 
     void ThemeConfig::setTo(const QString &path) {
-        clear();
+        for(const QString &key : keys()) {
+            clear(key);
+        }
+
+        if (path.isNull()) {
+            qDebug() << "Loaded empty theme configuration";
+            return;
+        }
 
         qDebug() << "Loading theme configuration from" << path;
 
@@ -41,8 +50,10 @@ namespace SDDM {
         // Support non-latin strings in background picture path
         // Warning: The codec must be set immediately after creating the QSettings object,
         // before accessing any data.
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
         settings.setIniCodec("UTF-8");
         userSettings.setIniCodec("UTF-8");
+#endif
 
         // read default keys
         for (const QString &key: settings.allKeys()) {
@@ -60,5 +71,39 @@ namespace SDDM {
         if (settings.contains(QStringLiteral("background"))) {
             insert(QStringLiteral("defaultBackground"), settings.value(QStringLiteral("background")));
         }
+    }
+
+    QVariant ThemeConfig::value(const QString &key, const QVariant &def) {
+        if (!contains(key)) {
+            return def;
+        }
+
+        return value(key);
+    }
+
+    bool ThemeConfig::boolValue(const QString &key) {
+        return value(key).toBool();
+    }
+
+    int ThemeConfig::intValue(const QString &key) {
+        bool ok;
+        auto ret = value(key).toInt(&ok);
+        if (!ok) {
+            qWarning() << "Could not convert" << key << "(value" << value(key) << ") to int";
+        }
+        return ret;
+    }
+
+    qreal ThemeConfig::realValue(const QString &key) {
+        bool ok;
+        auto ret = value(key).toReal(&ok);
+        if (!ok) {
+            qWarning() << "Could not convert" << key << "(value" << value(key) << ") to real";
+        }
+        return ret;
+    }
+
+    QString ThemeConfig::stringValue(const QString &key) {
+        return value(key).toString();
     }
 }

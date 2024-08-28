@@ -1,5 +1,6 @@
 set(TRANSLATION_FILES
     ar.ts
+    bg.ts
     bn.ts
     ca.ts
     cs.ts
@@ -10,6 +11,7 @@ set(TRANSLATION_FILES
     eu.ts
     fi.ts
     fr.ts
+    gl.ts
     hi_IN.ts
     he.ts
     hu.ts
@@ -17,6 +19,7 @@ set(TRANSLATION_FILES
     is.ts
     it.ts
     ja.ts
+    ka.ts
     kk.ts
     ko.ts
     lt.ts
@@ -42,7 +45,7 @@ set(TRANSLATION_FILES
     zh_TW.ts
 )
 
-qt5_add_translation(QM_FILES ${TRANSLATION_FILES})
+qt_add_translation(QM_FILES ${TRANSLATION_FILES})
 
 install(FILES ${QM_FILES} DESTINATION "${COMPONENTS_TRANSLATION_DIR}")
 

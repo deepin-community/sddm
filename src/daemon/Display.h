@@ -23,6 +23,7 @@
 #define SDDM_DISPLAY_H
 
 #include <QObject>
+#include <QPointer>
 #include <QDir>
 
 #include "Auth.h"
@@ -41,15 +42,26 @@ namespace SDDM {
         Q_OBJECT
         Q_DISABLE_COPY(Display)
     public:
-        explicit Display(int terminalId, Seat *parent);
+        enum DisplayServerType {
+            X11DisplayServerType,
+            X11UserDisplayServerType,
+            WaylandDisplayServerType
+        };
+        Q_ENUM(DisplayServerType)
+
+        static DisplayServerType defaultDisplayServerType();
+        explicit Display(Seat *parent, DisplayServerType serverType);
         ~Display();
 
-        QString displayId() const;
-        const int terminalId() const;
+        DisplayServerType displayServerType() const;
+        DisplayServer *displayServer() const;
+
+        int terminalId() const;
 
         const QString &name() const;
 
         QString sessionType() const;
+        QString reuseSessionId() const { return m_reuseSessionId; }
 
         Seat *seat() const;
 
@@ -65,23 +77,28 @@ namespace SDDM {
 
     signals:
         void stopped();
+        void displayServerFailed();
 
         void loginFailed(QLocalSocket *socket);
         void loginSucceeded(QLocalSocket *socket);
 
     private:
         QString findGreeterTheme() const;
-        bool findSessionEntry(const QDir &dir, const QString &name) const;
+        bool findSessionEntry(const QStringList &dirPaths, const QString &name) const;
 
-        void startAuth(const QString &user, const QString &password,
+        bool startAuth(const QString &user, const QString &password,
                        const Session &session);
+
+        void startSocketServerAndGreeter();
+        void handleAutologinFailure();
+
+        DisplayServerType m_displayServerType = X11DisplayServerType;
 
         bool m_relogin { true };
         bool m_started { false };
 
-        int m_terminalId { 7 };
-
-        Session m_lastSession;
+        int m_terminalId = 0;
+        int m_sessionTerminalId = 0;
 
         QString m_passPhrase;
         QString m_sessionName;
@@ -91,7 +108,7 @@ namespace SDDM {
         DisplayServer *m_displayServer { nullptr };
         Seat *m_seat { nullptr };
         SocketServer *m_socketServer { nullptr };
-        QLocalSocket *m_socket { nullptr };
+        QPointer<QLocalSocket> m_socket;
         Greeter *m_greeter { nullptr };
 
     private slots:

@@ -24,6 +24,7 @@
 #include "Constants.h"
 #include "ScreenModel.h"
 #include "SessionModel.h"
+#include "SignalHandler.h"
 #include "ThemeConfig.h"
 #include "ThemeMetadata.h"
 #include "UserModel.h"
@@ -111,7 +112,7 @@ namespace SDDM {
         if (m_themeConfig)
             m_themeConfig->setTo(configFile);
         else
-            m_themeConfig = new ThemeConfig(configFile);
+            m_themeConfig = new ThemeConfig(configFile, this);
 
         const bool themeNeedsAllUsers = m_themeConfig->value(QStringLiteral("needsFullUserModel"), true).toBool();
         if(m_userModel && themeNeedsAllUsers && !m_userModel->containsAllUsers()) {
@@ -149,6 +150,7 @@ namespace SDDM {
         view->setResizeMode(QQuickView::SizeRootObjectToView);
         //view->setGeometry(QRect(QPoint(0, 0), screen->geometry().size()));
         view->setGeometry(screen->geometry());
+        view->setFlags(Qt::FramelessWindowHint);
         m_views.append(view);
 
         // remove the view when the screen is removed, but we
@@ -185,7 +187,7 @@ namespace SDDM {
         view->rootContext()->setContextProperty(QStringLiteral("sessionModel"), m_sessionModel);
         view->rootContext()->setContextProperty(QStringLiteral("screenModel"), screenModel);
         view->rootContext()->setContextProperty(QStringLiteral("userModel"), m_userModel);
-        view->rootContext()->setContextProperty(QStringLiteral("config"), *m_themeConfig);
+        view->rootContext()->setContextProperty(QStringLiteral("config"), m_themeConfig);
         view->rootContext()->setContextProperty(QStringLiteral("sddm"), m_proxy);
         view->rootContext()->setContextProperty(QStringLiteral("keyboard"), m_keyboard);
         view->rootContext()->setContextProperty(QStringLiteral("primaryScreen"), QGuiApplication::primaryScreen() == screen);
@@ -226,7 +228,7 @@ namespace SDDM {
 
         // show
         qDebug() << "Adding view for" << screen->name() << screen->geometry();
-        view->show();
+        view->showFullScreen();
 
         // activate windows for the primary screen to give focus to text fields
         if (QGuiApplication::primaryScreen() == screen)
@@ -258,13 +260,19 @@ namespace SDDM {
         }
 
         // Set font
-        QVariant fontEntry = mainConfig.Theme.Font.get();
-        QFont font = fontEntry.value<QFont>();
-        if (!fontEntry.toString().isEmpty())
-            QGuiApplication::setFont(font);
+        const QString fontStr = mainConfig.Theme.Font.get();
+        if (!fontStr.isEmpty()) {
+            QFont font;
+            if (font.fromString(fontStr)) {
+                QGuiApplication::setFont(font);
+            }
+        }
 
         // Set session model on proxy
         m_proxy->setSessionModel(m_sessionModel);
+
+        // If the socket ends, bail. There is not much we can do.
+        connect(m_proxy, &GreeterProxy::socketDisconnected, qGuiApp, &QCoreApplication::quit);
 
         // Create views
         const QList<QScreen *> screens = qGuiApp->primaryScreen()->virtualSiblings();
@@ -296,9 +304,7 @@ namespace SDDM {
 
 int main(int argc, char **argv)
 {
-    // Install message handler
-    qInstallMessageHandler(SDDM::GreeterMessageHandler);
-
+    bool testMode = false;
     // We set an attribute based on the platform we run on.
     // We only know the platform after we constructed QGuiApplication
     // though, so we need to find it out ourselves.
@@ -307,13 +313,18 @@ int main(int argc, char **argv)
         if(qstrcmp(argv[i], "-platform") == 0) {
             platform = QString::fromUtf8(argv[i + 1]);
         }
+        testMode |= qstrcmp(argv[i], "--test-mode") == 0;
     }
     if (platform.isEmpty()) {
         platform = QString::fromUtf8(qgetenv("QT_QPA_PLATFORM"));
     }
     if (platform.isEmpty()) {
-        platform = QStringLiteral("xcb");
+        platform = qEnvironmentVariableIsSet("WAYLAND_DISPLAY") ? QStringLiteral("wayland") : QStringLiteral("xcb");
     }
+
+    // Install message handler
+    if (!testMode)
+        qInstallMessageHandler(SDDM::GreeterMessageHandler);
 
     // HiDPI
     bool hiDpiEnabled = false;
@@ -334,7 +345,29 @@ int main(int argc, char **argv)
         QSurfaceFormat::setDefaultFormat(format);
     }
 
+    // Some themes may use KDE components and that will automatically load KDE's
+    // crash handler which we don't want counterintuitively setting this env
+    // disables that handler
+    qputenv("KDE_DEBUG", "1");
+
+    // Qt IM module
+    QString inputMethod = SDDM::mainConfig.InputMethod.get();
+    // Using qtvirtualkeyboard as IM on wayland doesn't really work,
+    // it has to be done by the compositor instead.
+    if (platform.startsWith(QStringLiteral("wayland")) && inputMethod == QStringLiteral("qtvirtualkeyboard"))
+        inputMethod = QString{};
+
+    if (!inputMethod.isEmpty())
+        qputenv("QT_IM_MODULE", inputMethod.toLocal8Bit());
+
     QGuiApplication app(argc, argv);
+    SDDM::SignalHandler s;
+    QObject::connect(&s, &SDDM::SignalHandler::sigtermReceived, &app, [] {
+        QCoreApplication::instance()->exit(-1);
+    });
+    QObject::connect(&s, &SDDM::SignalHandler::sigintReceived, &app, [] {
+        QCoreApplication::instance()->exit(-1);
+    });
 
     QCommandLineParser parser;
     parser.setApplicationDescription(TR("SDDM greeter"));

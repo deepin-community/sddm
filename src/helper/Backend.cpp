@@ -22,7 +22,6 @@
 #include "HelperApp.h"
 
 #include "backend/PamBackend.h"
-#include "backend/PasswdBackend.h"
 #include "Configuration.h"
 #include "UserSession.h"
 
@@ -43,15 +42,16 @@ namespace SDDM {
 
     Backend *Backend::get(HelperApp* parent)
     {
-    #ifdef USE_PAM
         return new PamBackend(parent);
-    #else
-        return new PasswdBackend(parent);
-    #endif
     }
 
     void Backend::setAutologin(bool on) {
         m_autologin = on;
+    }
+
+    void Backend::setDisplayServer(bool on)
+    {
+        m_displayServer = on;
     }
 
     void Backend::setGreeter(bool on) {
@@ -59,22 +59,15 @@ namespace SDDM {
     }
 
     bool Backend::openSession() {
+        QProcessEnvironment env = m_app->session()->processEnvironment();
         struct passwd *pw;
         pw = getpwnam(qPrintable(qobject_cast<HelperApp*>(parent())->user()));
         if (pw) {
-            QProcessEnvironment env = m_app->session()->processEnvironment();
             env.insert(QStringLiteral("HOME"), QString::fromLocal8Bit(pw->pw_dir));
             env.insert(QStringLiteral("PWD"), QString::fromLocal8Bit(pw->pw_dir));
             env.insert(QStringLiteral("SHELL"), QString::fromLocal8Bit(pw->pw_shell));
             env.insert(QStringLiteral("USER"), QString::fromLocal8Bit(pw->pw_name));
             env.insert(QStringLiteral("LOGNAME"), QString::fromLocal8Bit(pw->pw_name));
-            if (env.contains(QStringLiteral("DISPLAY")) && !env.contains(QStringLiteral("XAUTHORITY"))) {
-                // determine Xauthority path
-                QString value = QStringLiteral("%1/%2")
-                        .arg(QString::fromLocal8Bit(pw->pw_dir))
-                        .arg(mainConfig.X11.UserAuthFile.get());
-                env.insert(QStringLiteral("XAUTHORITY"), value);
-            }
 #if defined(Q_OS_FREEBSD)
         /* get additional environment variables via setclassenvironment();
             this needs to be done here instead of in UserSession::setupChildProcess
@@ -111,9 +104,21 @@ namespace SDDM {
             QProcessEnvironment::systemEnvironment().insert(savedEnv);
         }
 #endif
-            // TODO: I'm fairly sure this shouldn't be done for PAM sessions, investigate!
-            m_app->session()->setProcessEnvironment(env);
         }
+        if (env.value(QStringLiteral("XDG_SESSION_CLASS")) == QLatin1String("greeter")) {
+            // Qt internally may load the xdg portal system early on, prevent this, we do not have a functional session running.
+            env.insert(QStringLiteral("QT_NO_XDG_DESKTOP_PORTAL"), QStringLiteral("1"));
+            for (const auto &entry : mainConfig.GreeterEnvironment.get()) {
+                const int index = entry.indexOf(QLatin1Char('='));
+                if (index < 0) {
+                    qWarning() << "Malformed environment variable" << entry;
+                    continue;
+                }
+                env.insert(entry.left(index), entry.mid(index + 1));
+            }
+        }
+        // TODO: I'm fairly sure this shouldn't be done for PAM sessions, investigate!
+        m_app->session()->setProcessEnvironment(env);
         return m_app->session()->start();
     }
 

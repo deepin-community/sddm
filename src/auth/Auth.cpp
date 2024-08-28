@@ -62,9 +62,10 @@ namespace SDDM {
         AuthRequest *request { nullptr };
         QProcess *child { nullptr };
         QLocalSocket *socket { nullptr };
+        QString displayServerCmd;
         QString sessionPath { };
         QString user { };
-        QString cookie { };
+        QByteArray cookie { };
         bool autologin { false };
         bool greeter { false };
         QProcessEnvironment environment { };
@@ -101,7 +102,7 @@ namespace SDDM {
         static std::unique_ptr<Auth::SocketServer> self;
         if (!self) {
             self.reset(new SocketServer());
-            self->listen(QStringLiteral("sddm-auth%1").arg(QUuid::createUuid().toString().replace(QRegExp(QStringLiteral("[{}]")), QString())));
+            self->listen(QStringLiteral("sddm-auth-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
         }
         return self.get();
     }
@@ -132,7 +133,7 @@ namespace SDDM {
             env.insert(QStringLiteral("LANG"), QStringLiteral("C"));
         child->setProcessEnvironment(env);
         connect(child, QOverload<int,QProcess::ExitStatus>::of(&QProcess::finished), this, &Auth::Private::childExited);
-        connect(child, QOverload<QProcess::ProcessError>::of(&QProcess::error), this, &Auth::Private::childError);
+        connect(child, &QProcess::errorOccurred, this, &Auth::Private::childError);
         connect(request, &AuthRequest::finished, this, &Auth::Private::requestFinished);
         connect(request, &AuthRequest::promptsChanged, parent, &Auth::requestChanged);
     }
@@ -152,62 +153,75 @@ namespace SDDM {
         Auth *auth = qobject_cast<Auth*>(parent());
         Msg m = MSG_UNKNOWN;
         SafeDataStream str(socket);
-        str.receive();
-        str >> m;
-        switch (m) {
-            case ERROR: {
-                QString message;
-                Error type = ERROR_NONE;
-                str >> message >> type;
-                Q_EMIT auth->error(message, type);
-                break;
-            }
-            case INFO: {
-                QString message;
-                Info type = INFO_NONE;
-                str >> message >> type;
-                Q_EMIT auth->info(message, type);
-                break;
-            }
-            case REQUEST: {
-                Request r;
-                str >> r;
-                request->setRequest(&r);
-                break;
-            }
-            case AUTHENTICATED: {
-                QString user;
-                str >> user;
-                if (!user.isEmpty()) {
-                    auth->setUser(user);
-                    Q_EMIT auth->authentication(user, true);
+        while (socket->bytesAvailable() > 0) {
+            str.receive();
+            str >> m;
+            switch (m) {
+                case ERROR: {
+                    QString message;
+                    Error type = ERROR_NONE;
+                    str >> message >> type;
+                    Q_EMIT auth->error(message, type);
+                    break;
+                }
+                case INFO: {
+                    QString message;
+                    Info type = INFO_NONE;
+                    str >> message >> type;
+                    Q_EMIT auth->info(message, type);
+                    break;
+                }
+                case REQUEST: {
+                    Request r;
+                    str >> r;
+                    request->setRequest(&r);
+                    break;
+                }
+                case AUTHENTICATED: {
+                    QString user;
+                    str >> user;
+                    if (!user.isEmpty()) {
+                        auth->setUser(user);
+                        Q_EMIT auth->authentication(user, true);
+                        str.reset();
+                        str << AUTHENTICATED << environment << cookie;
+                        str.send();
+                    }
+                    else {
+                        Q_EMIT auth->authentication(user, false);
+                    }
+                    break;
+                }
+                case SESSION_STATUS: {
+                    bool status;
+                    str >> status;
+                    Q_EMIT auth->sessionStarted(status);
                     str.reset();
-                    str << AUTHENTICATED << environment << cookie;
+                    str << SESSION_STATUS;
                     str.send();
+                    break;
                 }
-                else {
-                    Q_EMIT auth->authentication(user, false);
+                case DISPLAY_SERVER_STARTED: {
+                    QString displayName;
+                    str >> displayName;
+                    Q_EMIT auth->displayServerReady(displayName);
+                    str.reset();
+                    str << DISPLAY_SERVER_STARTED;
+                    str.send();
+                    break;
                 }
-                break;
-            }
-            case SESSION_STATUS: {
-                bool status;
-                str >> status;
-                Q_EMIT auth->sessionStarted(status);
-                str.reset();
-                str << SESSION_STATUS;
-                str.send();
-                break;
-            }
-            default: {
-                Q_EMIT auth->error(QStringLiteral("Auth: Unexpected value received: %1").arg(m), ERROR_INTERNAL);
+                default: {
+                    Q_EMIT auth->error(QStringLiteral("Auth: Unexpected value received: %1").arg(m), ERROR_INTERNAL);
+                }
             }
         }
     }
 
     void Auth::Private::childExited(int exitCode, QProcess::ExitStatus exitStatus) {
         if (exitStatus != QProcess::NormalExit) {
-            qWarning("Auth: sddm-helper crashed (exit code %d)", exitCode);
+            qWarning("Auth: sddm-helper (%s) crashed (exit code %d)",
+                     qPrintable(child->arguments().join(QLatin1Char(' '))),
+                     HelperExitStatus(exitStatus));
             Q_EMIT qobject_cast<Auth*>(parent())->error(child->errorString(), ERROR_INTERNAL);
         }
 
@@ -248,12 +262,13 @@ namespace SDDM {
     }
 
     Auth::~Auth() {
+        stop();
         delete d;
     }
 
     void Auth::registerTypes() {
-        qmlRegisterType<AuthPrompt>();
-        qmlRegisterType<AuthRequest>();
+        qmlRegisterAnonymousType<AuthPrompt>("Auth", 1);
+        qmlRegisterAnonymousType<AuthRequest>("Auth", 1);
         qmlRegisterType<Auth>("Auth", 1, 0, "Auth");
     }
 
@@ -266,7 +281,7 @@ namespace SDDM {
         return d->greeter;
     }
 
-    const QString& Auth::cookie() const {
+    const QByteArray& Auth::cookie() const {
         return d->cookie;
     }
 
@@ -298,7 +313,7 @@ namespace SDDM {
         d->environment.insert(key, value);
     }
 
-    void Auth::setCookie(const QString& cookie) {
+    void Auth::setCookie(const QByteArray& cookie) {
         if (cookie != d->cookie) {
             d->cookie = cookie;
             Q_EMIT cookieChanged();
@@ -327,6 +342,14 @@ namespace SDDM {
         }
     }
 
+    void Auth::setDisplayServerCommand(const QString &command)
+    {
+        if (d->displayServerCmd != command) {
+            d->displayServerCmd = command;
+            Q_EMIT displayServerCommandChanged();
+        }
+    }
+
     void Auth::setSession(const QString& path) {
         if (path != d->sessionPath) {
             d->sessionPath = path;
@@ -347,16 +370,30 @@ namespace SDDM {
     void Auth::start() {
         QStringList args;
         args << QStringLiteral("--socket") << SocketServer::instance()->fullServerName();
-        args << QStringLiteral("--id") << QStringLiteral("%1").arg(d->id);
+        args << QStringLiteral("--id") << QString::number(d->id);
         if (!d->sessionPath.isEmpty())
             args << QStringLiteral("--start") << d->sessionPath;
         if (!d->user.isEmpty())
             args << QStringLiteral("--user") << d->user;
         if (d->autologin)
             args << QStringLiteral("--autologin");
+        if (!d->displayServerCmd.isEmpty())
+            args << QStringLiteral("--display-server") << d->displayServerCmd;
         if (d->greeter)
             args << QStringLiteral("--greeter");
         d->child->start(QStringLiteral("%1/sddm-helper").arg(QStringLiteral(LIBEXEC_INSTALL_DIR)), args);
+    }
+
+    void Auth::stop() {
+        if (d->child->state() == QProcess::NotRunning) {
+            return;
+        }
+
+        d->child->terminate();
+
+        // wait for finished
+        if (!d->child->waitForFinished(5000))
+            d->child->kill();
     }
 }
 

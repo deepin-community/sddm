@@ -27,29 +27,68 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#ifdef __FreeBSD__
+#include <sys/consio.h>
+#else
 #include <linux/vt.h>
 #include <linux/kd.h>
+#endif
 #include <sys/ioctl.h>
+#include <qscopeguard.h>
+#include <QFileInfo>
 
 #define RELEASE_DISPLAY_SIGNAL (SIGRTMAX)
 #define ACQUIRE_DISPLAY_SIGNAL (SIGRTMAX - 1)
 
 namespace SDDM {
     namespace VirtualTerminal {
-        static void onAcquireDisplay(int signal) {
-            int fd = open("/dev/tty0", O_RDWR | O_NOCTTY);
+#ifdef __FreeBSD__
+        static const char *defaultVtPath = "/dev/ttyv0";
+
+        QString path(int vt) {
+            char c = (vt <= 10 ? '0' : 'a') + (vt - 1);
+            return QStringLiteral("/dev/ttyv%1").arg(c);
+        }
+
+        int getVtActive(int fd) {
+            int vtActive = 0;
+            if (ioctl(fd, VT_GETACTIVE, &vtActive) < 0) {
+                qCritical() << "Failed to get current VT:" << strerror(errno);
+                return -1;
+            }
+            return vtActive;
+        }
+#else
+        static const char *defaultVtPath = "/dev/tty0";
+
+        QString path(int vt) {
+            return QStringLiteral("/dev/tty%1").arg(vt);
+        }
+
+        int getVtActive(int fd) {
+            vt_stat vtState { };
+            if (ioctl(fd, VT_GETSTATE, &vtState) < 0) {
+                qCritical() << "Failed to get current VT:" << strerror(errno);
+                return -1;
+            }
+            return vtState.v_active;
+        }
+#endif
+
+        static void onAcquireDisplay([[maybe_unused]] int signal) {
+            int fd = open(defaultVtPath, O_RDWR | O_NOCTTY);
             ioctl(fd, VT_RELDISP, VT_ACKACQ);
             close(fd);
         }
 
-        static void onReleaseDisplay(int signal) {
-            int fd = open("/dev/tty0", O_RDWR | O_NOCTTY);
+        static void onReleaseDisplay([[maybe_unused]] int signal) {
+            int fd = open(defaultVtPath, O_RDWR | O_NOCTTY);
             ioctl(fd, VT_RELDISP, 1);
             close(fd);
         }
 
         static bool handleVtSwitches(int fd) {
-            vt_mode setModeRequest = { 0 };
+            vt_mode setModeRequest { };
             bool ok = true;
 
             setModeRequest.mode = VT_PROCESS;
@@ -68,7 +107,7 @@ namespace SDDM {
         }
 
         static void fixVtMode(int fd, bool vt_auto) {
-            vt_mode getmodeReply = { 0 };
+            vt_mode getmodeReply { };
             int kernelDisplayMode = 0;
             bool modeFixed = false;
             bool ok = true;
@@ -115,34 +154,43 @@ out:
                 qDebug() << "VT mode didn't need to be fixed";
         }
 
-        int setUpNewVt() {
-            // open VT master
-            int fd = open("/dev/tty0", O_RDWR | O_NOCTTY);
+        int currentVt()
+        {
+            int fd = open(defaultVtPath, O_RDWR | O_NOCTTY);
             if (fd < 0) {
                 qCritical() << "Failed to open VT master:" << strerror(errno);
                 return -1;
             }
-
-            vt_stat vtState = { 0 };
-            if (ioctl(fd, VT_GETSTATE, &vtState) < 0) {
-                qCritical() << "Failed to get current VT:" << strerror(errno);
+            auto closeFd = qScopeGuard([fd] {
                 close(fd);
+            });
+
+            return getVtActive(fd);
+        }
+
+
+        int setUpNewVt() {
+            // open VT master
+            int fd = open(defaultVtPath, O_RDWR | O_NOCTTY);
+            if (fd < 0) {
+                qCritical() << "Failed to open VT master:" << strerror(errno);
                 return -1;
             }
+            auto closeFd = qScopeGuard([fd] {
+                close(fd);
+            });
 
             int vt = 0;
             if (ioctl(fd, VT_OPENQRY, &vt) < 0) {
                 qCritical() << "Failed to open new VT:" << strerror(errno);
-                close(fd);
                 return -1;
             }
 
-            close(fd);
-
             // fallback to active VT
             if (vt <= 0) {
-                qWarning() << "New VT" << vt << "is not valid, fall back to" << vtState.v_active;
-                return vtState.v_active;
+                int vtActive = getVtActive(fd);
+                qWarning() << "New VT" << vt << "is not valid, fall back to" << vtActive;
+                return vtActive;
             }
 
             return vt;
@@ -153,12 +201,18 @@ out:
 
             int fd;
 
-            int activeVtFd = open("/dev/tty0", O_RDWR | O_NOCTTY);
+            int activeVtFd = open(defaultVtPath, O_RDWR | O_NOCTTY);
 
-            QString ttyString = QStringLiteral("/dev/tty%1").arg(vt);
+            QString ttyString = path(vt);
             int vtFd = open(qPrintable(ttyString), O_RDWR | O_NOCTTY);
             if (vtFd != -1) {
                 fd = vtFd;
+
+                // Clear VT
+                static const char *clearEscapeSequence = "\33[H\33[2J";
+                if (write(vtFd, clearEscapeSequence, sizeof(clearEscapeSequence)) == -1) {
+                    qWarning("Failed to clear VT %d: %s", vt, strerror(errno));
+                }
 
                 // set graphics mode to prevent flickering
                 if (ioctl(fd, KDSETMODE, KD_GRAPHICS) < 0)
@@ -171,7 +225,7 @@ out:
                 fixVtMode(activeVtFd, vt_auto);
             } else {
                 qWarning("Failed to open %s: %s", qPrintable(ttyString), strerror(errno));
-                qDebug("Using /dev/tty0 instead of %s!", qPrintable(ttyString));
+                qDebug("Using %s instead of %s!", defaultVtPath, qPrintable(ttyString));
                 fd = activeVtFd;
             }
 
@@ -181,11 +235,21 @@ out:
             if (!vt_auto)
                 handleVtSwitches(fd);
 
-            if (ioctl(fd, VT_ACTIVATE, vt) < 0)
-                qWarning("Couldn't initiate jump to VT %d: %s", vt, strerror(errno));
-            else if (ioctl(fd, VT_WAITACTIVE, vt) < 0)
-                qWarning("Couldn't finalize jump to VT %d: %s", vt, strerror(errno));
+            do {
+                errno = 0;
 
+                if (ioctl(fd, VT_ACTIVATE, vt) < 0) {
+                    if (errno == EINTR)
+                        continue;
+
+                    qWarning("Couldn't initiate jump to VT %d: %s", vt, strerror(errno));
+                    break;
+                }
+
+                if (ioctl(fd, VT_WAITACTIVE, vt) < 0 && errno != EINTR)
+                    qWarning("Couldn't finalize jump to VT %d: %s", vt, strerror(errno));
+
+            } while (errno == EINTR);
             close(activeVtFd);
             if (vtFd != -1)
                 close(vtFd);
