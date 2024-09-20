@@ -1,8 +1,12 @@
-sddm (0.19.0-3) UNRELEASED; urgency=medium
+sddm (0.19.0-3deepin0) unstable; urgency=medium
 
+  [ Debian Qt/KDE Maintainers ]
   * update
 
- -- Debian Qt/KDE Maintainers <debian-qt-kde@lists.debian.org>  Fri, 08 Jul 2022 01:56:15 -0400
+  [ Tianyu Chen ]
+  * No source change upload against GCC 12.
+
+ -- Tianyu Chen <sweetyfish@deepin.org>  Fri, 20 Sep 2024 12:18:19 +0800
 
 sddm (0.19.0-3) unstable; urgency=medium
 
